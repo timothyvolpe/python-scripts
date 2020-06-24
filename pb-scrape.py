@@ -7,6 +7,8 @@ from decimal import *
 PB_PEAK_FORMAT = "https://www.peakbagger.com/peak.aspx?pid={0}"
 REQUEST_COOLDOWN = 1.5 # time to wait before consecutive PB requests
 
+CSV_FILENAME = "peaks.csv"
+
 us_state_abbrev = {
 	'Alabama': 'AL', 'Alaska': 'AK', 'American Samoa': 'AS', 'Arizona': 'AZ',
 	'Arkansas': 'AR', 'California': 'CA', 'Colorado': 'CO',
@@ -28,10 +30,11 @@ us_state_abbrev = {
 }
 
 class Peak:
-	def __init__(self, name, elevation, prominance, rank, pid):
+	def __init__(self, name, elevation, prominance, range, rank, pid):
 		self.peak_name = name
 		self.elevation = elevation
 		self.prominance = prominance
+		self.range = range
 		self.rank = rank
 		self.pid = pid
 		
@@ -42,58 +45,7 @@ class Peak:
 		self.state = ""
 		self.state_abbrev = ""
 		
-def coordinate_str_to_decimal(coord_str):
-	coord_str = coord_str.replace("&deg", '')
-	tokens = coord_str.split()
-	lat_deg = int(tokens[0])
-	lat_min = int(tokens[1].replace('\'', ''))
-	lat_sec = int(tokens[2].replace("\'\'", ''))
-	lat_card = tokens[3]
-	lat_decimal = lat_deg + lat_min/60 + lat_sec/3600
-	print("{0}/{1} = {2}".format(lat_sec, 3600, lat_sec/3600))
-	
-	long_deg = int(tokens[4])
-	long_min = int(tokens[5].replace('\'', ''))
-	long_sec = int(tokens[6].replace("\'\'", ''))
-	long_card = tokens[7]
-	long_decimal = long_deg + long_min/60 + long_sec/3600
-	
-	print("{0}, {1}".format(lat_decimal, long_decimal))
-
-def main():
-	print("Peak Info Scraper v1.0")
-	print("By Timothy Volpe")
-	print("\nFor use with www.peakbagger.com")
-	
-	ignored_unranked = True
-	
-	while True:
-		link = input("\nEnter Link to Peak List: ")
-		if not link:
-			return
-			
-		print("Retrieving list page...")
-		try:
-			list_page = requests.get(link)
-		except requests.exceptions.MissingSchema as err:
-			print(err)
-			continue
-		except requests.exceptions.ConnectionError as err:
-			print("Failed to connect to {0}".format(link))
-			continue
-		except Exception as err:
-			print(err)
-			return
-		except:
-			print("Unknown exception")
-			return
-		print("Success!")
-		break
-		
-	ranked = input("Ignore Unranked (blank for yes)?:")
-	if ranked:
-		ignore_unranked = False
-		
+def parse_peak_list(ignored_unranked, list_page):
 	list_page_tree = html.fromstring(list_page.content)
 	
 	titles = list_page_tree.xpath("//h1/text()")
@@ -106,8 +58,8 @@ def main():
 		
 	peak_table = list_page_tree.xpath("//table[@class=\"gray\"]")
 	if peak_table:
-		print("\n\tPeak Name\t\t\tElevation\tProminance")
-		print("-----------------------------------------------------------------------")
+		print("\n\tPeak Name\t\t\tElevation\tProminance\tRange")
+		print("-------------------------------------------------------------------------------------------------")
 		try:
 			peak_list = peak_table[0].xpath(".//tr")
 			for peak_row in peak_list[2:]:
@@ -121,24 +73,27 @@ def main():
 				pid = int(link.split("pid=")[1])
 				elevation = int(peak_columns[2].text)
 				prominance = int(peak_columns[3].text)
-				peaks.append(Peak(title, elevation, prominance, rank, pid))
+				range = peak_columns[4].xpath("./a/text()")[0]
+				peaks.append(Peak(title, elevation, prominance, range, rank, pid))
 				if len(title) > 15:
 					title_entry = title + "\t\t"
 				else:
 					title_entry = title + "\t\t\t"
-				print(" {0}.\t{1}({2} ft,\t{3} ft)".format(rank, title_entry, elevation, prominance))
+				if prominance > 999:
+					range_entry = "\t" + range
+				else:
+					range_entry = "\t\t" + range
+				print(" {0}.\t{1}({2} ft,\t{3} ft){4}".format(rank, title_entry, elevation, prominance, range_entry))
 		except ValueError as err:
 			print("Unexpected value in webpage: {0}".format(err))
 		except IndexError:
 			print("Missing expected element")
 	else:
 		print("Unable to find table body")
-		return
+		
+	return peaks
 	
-	# Make sure the user wants to proceed
-	check_peaks = input("Continue scraping each peak's data page (Y/n)?: ")
-	if check_peaks != "Y":
-		return
+def scrape_peak_data(peaks):
 	# Check the page
 	for peak in peaks:
 		# Download the page and generate tree
@@ -187,8 +142,81 @@ def main():
 		print("  State: {0} ({1})".format(peak.state, peak.state_abbrev))
 		
 		time.sleep(REQUEST_COOLDOWN)
+		
+def write_peak_data(peaks, filename):
+	print("\nWriting to {0}".format(filename))
+	with open(filename, 'w', newline='') as csvfile:
+		fieldnames = ["Peak", "Mountain", "Elevation (ft)", "Prominance (ft)",
+						"Summited", "Summit Date", "Summit Count", "State",
+						"Group", "Latitude, Longitude", "Trails", "Range (Level 6)", "Notes"]
+		writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+
+		writer.writeheader()
+		
+		for peak in peaks:
+			lat_long = "{0}, {1}".format(peak.lat, peak.long)
+			writer.writerow(
+					{"Peak": peak.peak_name,
+					"Mountain": peak.peak_name,
+					"Elevation (ft)": peak.elevation,
+					"Prominance (ft)": peak.prominance,
+					"Summited": "No",
+					"Summit Date": "",
+					"Summit Count": "",
+					"State": peak.state_abbrev,
+					"Group": "",
+					"Latitude, Longitude": lat_long,
+					"Trails": "",
+					"Range (Level 6)": peak.range,
+					"Notes": peak.alt_names}
+				)
+
+
+def main():
+	print("Peak Info Scraper v1.0")
+	print("By Timothy Volpe")
+	print("\nFor use with www.peakbagger.com")
+	
+	ignored_unranked = True
+	
+	# Get the link list from the user
+	while True:
+		link = input("\nEnter Link to Peak List: ")
+		if not link:
+			return
+			
+		print("Retrieving list page...")
+		try:
+			list_page = requests.get(link)
+		except requests.exceptions.MissingSchema as err:
+			print(err)
+			continue
+		except requests.exceptions.ConnectionError as err:
+			print("Failed to connect to {0}".format(link))
+			continue
+		except Exception as err:
+			print(err)
+			return
+		except:
+			print("Unknown exception")
+			return
+		print("Success!")
+		break
+		
+	ranked = input("Ignore Unranked (blank for yes)?:")
+	if ranked:
+		ignore_unranked = False
+		
+	peaks = parse_peak_list(ignored_unranked, list_page)
+	
+	# Make sure the user wants to proceed
+	check_peaks = input("Continue scraping each peak's data page (Y/n)?: ")
+	if check_peaks != "Y":
+		return
+	scrape_peak_data(peaks)
 	
 	# Write to CSV file
+	write_peak_data(peaks, CSV_FILENAME)
 
 if __name__ == "__main__":
 	main()
