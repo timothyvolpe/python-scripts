@@ -1,5 +1,5 @@
 # Python Script Collection
-## A collection of small Python scripts I've written
+A collection of small Python scripts I've written
 
 ## Script Descriptions
 ### pb-scrape.py
